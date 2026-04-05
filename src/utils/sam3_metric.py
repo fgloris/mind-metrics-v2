@@ -89,100 +89,6 @@ def mask_center_point(mask: ArrayMask) -> Optional[List[int]]:
     return [int(round(xs.mean())), int(round(ys.mean()))]
 
 
-def mask_xyxy_box(mask: ArrayMask) -> Optional[List[int]]:
-    ys, xs = np.where(mask > 0)
-    if len(xs) == 0:
-        return None
-    x0 = int(xs.min())
-    y0 = int(ys.min())
-    x1 = int(xs.max())
-    y1 = int(ys.max())
-    return [x0, y0, x1, y1]
-
-
-def _build_reinit_prompts(filtered_items: List[Dict[str, Any]], prefer_mask_prompt: bool = True):
-    obj_ids: List[int] = []
-    object_masks: List[np.ndarray] = []
-    object_boxes: List[List[int]] = []
-    object_points: List[List[List[int]]] = []
-    object_labels: List[List[int]] = []
-
-    cur_id = 1
-    for item in filtered_items:
-        mask = np.asarray(item["mask"]).astype(bool)
-        point = mask_center_point(mask)
-        box = mask_xyxy_box(mask)
-        if point is None:
-            continue
-        obj_ids.append(cur_id)
-        object_points.append([point])
-        object_labels.append([1])
-        object_masks.append(mask.astype(np.float32))
-        object_boxes.append(box if box is not None else [point[0], point[1], point[0], point[1]])
-        cur_id += 1
-
-    return obj_ids, object_masks, object_boxes, object_points, object_labels
-
-
-def _add_reinit_inputs(
-    processor,
-    inference_session,
-    obj_ids: List[int],
-    object_masks: List[np.ndarray],
-    object_boxes: List[List[int]],
-    object_points: List[List[List[int]]],
-    object_labels: List[List[int]],
-    frame_idx: int = 0,
-) -> str:
-    if len(obj_ids) == 0:
-        return "none"
-
-    errors = []
-
-    mask_candidates = [
-        {"input_masks": [object_masks]},
-        {"input_masks": np.stack(object_masks, axis=0)},
-    ]
-    for kwargs in mask_candidates:
-        try:
-            processor.add_inputs_to_inference_session(
-                inference_session=inference_session,
-                frame_idx=frame_idx,
-                obj_ids=copy.deepcopy(obj_ids),
-                **kwargs,
-            )
-            return "mask"
-        except Exception as e:
-            errors.append(f"mask_prompt_failed: {type(e).__name__}: {e}")
-
-    box_candidates = [
-        {"input_boxes": [object_boxes]},
-        {"input_boxes": object_boxes},
-    ]
-    for kwargs in box_candidates:
-        try:
-            processor.add_inputs_to_inference_session(
-                inference_session=inference_session,
-                frame_idx=frame_idx,
-                obj_ids=copy.deepcopy(obj_ids),
-                **kwargs,
-            )
-            return "box"
-        except Exception as e:
-            errors.append(f"box_prompt_failed: {type(e).__name__}: {e}")
-
-    processor.add_inputs_to_inference_session(
-        inference_session=inference_session,
-        frame_idx=frame_idx,
-        obj_ids=copy.deepcopy(obj_ids),
-        input_points=[object_points],
-        input_labels=[object_labels],
-    )
-    if errors:
-        tqdm.write("[SAM3] Reinit fallback to point prompt. " + " | ".join(errors))
-    return "point"
-
-
 
 def filter_masks(
     masks: List[ArrayMask],
@@ -242,7 +148,6 @@ def propose_objects_from_grid(
     width: int,
     height: int,
     grid_size: int = 8,
-    mask_threshold: float = 0.3,
 ) -> Tuple[List[ArrayMask], Optional[List[float]]]:
     grid_points = make_grid_points(width, height, grid_size=grid_size)
 
@@ -277,7 +182,7 @@ def propose_objects_from_grid(
     bin_masks = []
     for m in masks_np:
         m2d = _to_single_mask_2d(m)
-        bin_masks.append(m2d > mask_threshold)
+        bin_masks.append(m2d > 0.0)
     return bin_masks, scores
 
 
@@ -296,21 +201,30 @@ def reinitialize_with_filtered_objects(
         dtype=dtype,
     )
 
-    obj_ids, object_masks, object_boxes, object_points, object_labels = _build_reinit_prompts(filtered_items)
+    obj_ids: List[int] = []
+    object_points: List[List[List[int]]] = []
+    object_labels: List[List[int]] = []
+
+    cur_id = 1
+    for item in filtered_items:
+        point = mask_center_point(item["mask"])
+        if point is None:
+            continue
+        obj_ids.append(cur_id)
+        object_points.append([point])
+        object_labels.append([1])
+        cur_id += 1
 
     if len(obj_ids) == 0:
         print('warning: obj_ids is empty!')
         return new_session, {"obj_ids": [], "first_frame_masks": None}
 
-    prompt_mode = _add_reinit_inputs(
-        processor=processor,
+    processor.add_inputs_to_inference_session(
         inference_session=new_session,
-        obj_ids=obj_ids,
-        object_masks=object_masks,
-        object_boxes=object_boxes,
-        object_points=object_points,
-        object_labels=object_labels,
         frame_idx=0,
+        obj_ids=copy.deepcopy(obj_ids),
+        input_points=[object_points],
+        input_labels=[object_labels],
     )
 
     outputs = model(inference_session=new_session, frame_idx=0)
@@ -321,8 +235,7 @@ def reinitialize_with_filtered_objects(
     )[0]
 
     print('obj_ids reinit:', obj_ids)
-    tqdm.write(f"[SAM3] reinit prompt mode: {prompt_mode}")
-    return new_session, {"obj_ids": obj_ids, "first_frame_masks": first_frame_masks, "prompt_mode": prompt_mode}
+    return new_session, {"obj_ids": obj_ids, "first_frame_masks": first_frame_masks}
 
 
 @torch.inference_mode()
@@ -338,7 +251,6 @@ def run_grid_prompt_video_tracking_on_tensor(
     max_area_ratio: float = 0.5,
     max_border_touch_ratio: float = 0.5,
     iou_dedup_thresh: float = 0.8,
-    mask_threshold: float = 0.3,
 ) -> Dict[str, Any]:
     if frames.ndim != 4 or frames.shape[0] == 0:
         raise ValueError(f"frames must be non-empty [T, C, H, W], got {tuple(frames.shape)}")
@@ -361,7 +273,6 @@ def run_grid_prompt_video_tracking_on_tensor(
         width=width,
         height=height,
         grid_size=grid_size,
-        mask_threshold=mask_threshold,
     )
 
     filtered_items = filter_masks(
@@ -387,7 +298,6 @@ def run_grid_prompt_video_tracking_on_tensor(
     )
     obj_ids = init_info["obj_ids"]
     first_frame_masks = init_info["first_frame_masks"]
-    prompt_mode = init_info.get("prompt_mode", "unknown")
 
     video_segments: Dict[int, Dict[int, ArrayMask]] = {}
 
@@ -402,7 +312,7 @@ def run_grid_prompt_video_tracking_on_tensor(
                     raise ValueError(
                         f"first_frame mask for obj {obj_id} is not 2D after squeeze: {mask_2d.shape}"
                     )
-                frame0_result[obj_id] = mask_2d > mask_threshold
+                frame0_result[obj_id] = mask_2d > 0.0
         video_segments[0] = frame0_result
     else:
         print('first_frame_masks is None!')
@@ -413,8 +323,6 @@ def run_grid_prompt_video_tracking_on_tensor(
             "filtered_items": filtered_items,
             "video_segments": video_segments,
             "video_size": (height, width),
-            "prompt_mode": prompt_mode,
-            "mask_threshold": mask_threshold,
         }
 
     # 再传播后续帧
@@ -435,7 +343,7 @@ def run_grid_prompt_video_tracking_on_tensor(
                         f"propagated mask for frame {int(output.frame_idx)}, obj {obj_id} "
                         f"is not 2D after squeeze: {mask_2d.shape}"
                     )
-                frame_result[obj_id] = mask_2d > mask_threshold
+                frame_result[obj_id] = mask_2d > 0.0
 
         video_segments[int(output.frame_idx)] = frame_result
 
