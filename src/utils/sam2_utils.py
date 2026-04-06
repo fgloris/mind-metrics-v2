@@ -8,18 +8,9 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-try:
-    from segment_anything import SamAutomaticMaskGenerator, sam_model_registry
-except ImportError as e:  # pragma: no cover
-    SamAutomaticMaskGenerator = None
-    sam_model_registry = None
-    _IMPORT_ERROR = e
-else:
-    _IMPORT_ERROR = None
-
+from segment_anything import SamAutomaticMaskGenerator, sam_model_registry, ParallelEncoderVideoMaskGenerator
 
 ArrayMask = np.ndarray
-
 
 @dataclass
 class FrameMaskData:
@@ -31,24 +22,6 @@ class FrameMaskData:
     patch_indices: Optional[np.ndarray] = None
     predicted_iou: Optional[float] = None
     stability_score: Optional[float] = None
-
-
-
-def _require_segment_anything() -> None:
-    if SamAutomaticMaskGenerator is None or sam_model_registry is None:
-        raise ImportError(
-            "segment_anything is required for sam2_utils.py. "
-            "Please install Meta's segment-anything package first."
-        ) from _IMPORT_ERROR
-
-
-
-def _resolve_device(device: Optional[str] = None) -> str:
-    if device is not None:
-        return device
-    return "cuda" if torch.cuda.is_available() else "cpu"
-
-
 
 def frames_tensor_to_rgb_list(frames: torch.Tensor) -> List[np.ndarray]:
     """
@@ -66,12 +39,10 @@ def frames_tensor_to_rgb_list(frames: torch.Tensor) -> List[np.ndarray]:
     frames = frames.permute(0, 2, 3, 1).contiguous()
     return [frame.numpy() for frame in frames]
 
-
-
 def build_sam2_generator(
     checkpoint: str,
+    device: str,
     model_type: str = "vit_h",
-    device: Optional[str] = None,
     *,
     points_per_side: int = 32,
     pred_iou_thresh: float = 0.88,
@@ -88,8 +59,6 @@ def build_sam2_generator(
         Although this file is named sam2_utils.py to match your project naming,
         the generator interface here is the classic automatic mask generator API.
     """
-    _require_segment_anything()
-    device = _resolve_device(device)
     tqdm.write(f"[SAM2/framewise] Loading automatic mask generator from {checkpoint} on {device}...")
 
     sam = sam_model_registry[model_type](checkpoint=checkpoint)
@@ -106,7 +75,16 @@ def build_sam2_generator(
         crop_n_points_downscale_factor=crop_n_points_downscale_factor,
     )
 
-
+def build_fast_video_sam_generator(
+    checkpoint: str,
+    device: str = "cuda:0",
+    model_type: str = "vit_h",
+    **kwargs: Any,
+) -> ParallelEncoderVideoMaskGenerator:
+    model = sam_model_registry[model_type](checkpoint=checkpoint)
+    model.to(device=device)
+    model.eval()
+    return ParallelEncoderVideoMaskGenerator(model=model, **kwargs)
 
 def build_nonoverlap_id_mask(anns: List[Dict[str, Any]], img_h: int, img_w: int) -> np.ndarray:
     """
