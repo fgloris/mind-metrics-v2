@@ -1,7 +1,7 @@
 import os
 import json
 import math
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 
 import torch
 import numpy as np
@@ -28,8 +28,10 @@ def find_latest_metrics_json(output_dir: str = "output") -> str:
     json_files.sort(key=os.path.getmtime, reverse=True)
     return json_files[0]
 
+
 def timestamped_json_path(output_dir: str = "output") -> Path:
     out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     return out_dir / f"metrics_{ts}.json"
 
@@ -53,12 +55,36 @@ def save_metrics_json(payload: Dict[str, Any], output_dir: str = "output") -> Pa
         json.dump(serializable, f, ensure_ascii=False, indent=2)
     return json_path
 
+
 def load_metrics_json(output_dir: str = "output") -> dict:
     json_path = find_latest_metrics_json(output_dir)
     with open(json_path, "r", encoding="utf-8") as f:
         metrics = json.load(f)
     print(f"[vis] Loaded metrics json: {json_path}")
+    metrics["_json_path"] = json_path
     return metrics
+
+
+def load_soft_mat_npy_from_metrics(metrics: dict) -> Optional[np.ndarray]:
+    meta = metrics.get("meta", {})
+    npy_path = meta.get("soft_mat_npy_path")
+    if not npy_path:
+        print("[vis] soft_mat_npy_path not found in metrics json.")
+        return None
+
+    json_path = metrics.get("_json_path")
+    candidate_paths = [Path(npy_path)]
+    if json_path is not None:
+        candidate_paths.append(Path(json_path).parent / Path(npy_path).name)
+
+    for path in candidate_paths:
+        if path.exists():
+            soft_mats = np.load(path)
+            print(f"[vis] Loaded soft_mat npy: {path}, shape={soft_mats.shape}")
+            return soft_mats
+
+    print(f"[vis] soft_mat npy not found. Tried: {[str(p) for p in candidate_paths]}")
+    return None
 
 
 def _read_video_frames(video_path: str, start_frame: int, num_frames: int) -> List[np.ndarray]:
@@ -166,14 +192,21 @@ def _normalize_map(sim_map, mode="minmax", vmin=None, vmax=None):
 
 
 class MetricsFrameViewer:
-    def __init__(self, gt_frames: List[np.ndarray], pred_frames: List[np.ndarray], metrics: dict):
+    def __init__(self, gt_frames: List[np.ndarray], pred_frames: List[np.ndarray], metrics: dict, soft_mats_npy: Optional[np.ndarray] = None):
         self.gt_frames = gt_frames
         self.pred_frames = pred_frames
         self.metrics = metrics
         self.frames_data = metrics["frames"]
+        self.soft_mats_npy = soft_mats_npy
 
         if len(self.gt_frames) != len(self.pred_frames) or len(self.gt_frames) != len(self.frames_data):
             raise ValueError("Frame count mismatch among gt_frames, pred_frames, and metrics['frames'].")
+        if self.soft_mats_npy is not None:
+            valid_len = min(len(self.frames_data), self.soft_mats_npy.shape[0])
+            self.gt_frames = self.gt_frames[:valid_len]
+            self.pred_frames = self.pred_frames[:valid_len]
+            self.frames_data = self.frames_data[:valid_len]
+            self.soft_mats_npy = self.soft_mats_npy[:valid_len]
 
         self.frame_idx = 0
         self.last_patch_idx = 0
@@ -212,17 +245,23 @@ class MetricsFrameViewer:
         self.current_img_b = _to_display_image(self.pred_frames[self.frame_idx])
 
         frame_data = self.frames_data[self.frame_idx]
-        self.has_soft_mat = ("soft_mat" in frame_data) and (frame_data["soft_mat"] is not None)
-
         self.h_a, self.w_a = self.current_img_a.shape[:2]
         self.h_b, self.w_b = self.current_img_b.shape[:2]
 
-        if self.has_soft_mat:
+        if self.soft_mats_npy is not None and self.frame_idx < len(self.soft_mats_npy):
+            self.current_soft_mat = np.asarray(self.soft_mats_npy[self.frame_idx], dtype=np.float32)
+            self.has_soft_mat = True
+        elif ("soft_mat" in frame_data) and (frame_data["soft_mat"] is not None):
             self.current_soft_mat = np.asarray(frame_data["soft_mat"], dtype=np.float32)
+            self.has_soft_mat = True
+        else:
+            self.current_soft_mat = None
+            self.has_soft_mat = False
+
+        if self.has_soft_mat:
             num_patches = self.current_soft_mat.shape[0]
             self.grid_h, self.grid_w = _infer_patch_grid(num_patches)
         else:
-            self.current_soft_mat = None
             self.grid_h, self.grid_w = None, None
 
     def _update_frame_visuals(self):
@@ -250,7 +289,7 @@ class MetricsFrameViewer:
             self.heat_artist.set_extent((0, self.w_b, self.h_b, 0))
             self.heat_artist.set_alpha(0.0)
         else:
-            self.text_artist.set_text("soft_mat not found in json; heatmap disabled")
+            self.text_artist.set_text("soft_mat not found in json/npy; heatmap disabled")
             self.heat_artist.set_alpha(0.0)
 
         self.fig.canvas.draw_idle()

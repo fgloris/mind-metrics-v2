@@ -61,9 +61,9 @@ def compute_patch_sim(
         # 7) gt self-similarity
         self_sim = (gt_feats @ gt_feats.T) * dist_sim
 
-        soft_score = joint_soft_sim.sum() / self_sim.sum()
+        soft_score = (joint_soft_sim / self_sim).sum()
 
-        #soft_mats_list.append(joint_soft_sim)
+        soft_mats_list.append(joint_soft_sim)
         soft_score_list.append(soft_score)
 
         best_idx = torch.argmax(joint_soft_sim, dim=1, keepdim=True)
@@ -73,4 +73,4 @@ def compute_patch_sim(
 
         hard_score_list.append(hard_score)
 
-    return soft_score_list, hard_score_list#, soft_mats_list
+    return soft_score_list, hard_score_list, soft_mats_list
