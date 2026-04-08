@@ -43,9 +43,9 @@ def extract_dinov3_features(frames: torch.Tensor, model, processor, device, batc
             # 提取patch tokens (跳过前5个token)
             patch_tokens = last_hidden_state[:, 5:, :]  # [batch, 1 + 4 + 3136, 768]
 
-            # L2 normalization
-            patch_tokens_norm = torch.nn.functional.normalize(patch_tokens, p=2, dim=-1)
-            features_list.append(patch_tokens_norm.cpu())
+            ## L2 normalization
+            #patch_tokens_norm = torch.nn.functional.normalize(patch_tokens, p=2, dim=-1)
+            features_list.append(patch_tokens.cpu())
 
             del batch_frames
 

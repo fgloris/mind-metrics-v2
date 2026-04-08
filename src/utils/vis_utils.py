@@ -87,7 +87,7 @@ def load_soft_mat_npy_from_metrics(metrics: dict) -> Optional[np.ndarray]:
     return None
 
 
-def _read_video_frames(video_path: str, start_frame: int, num_frames: int) -> List[np.ndarray]:
+def _read_video_frames(video_path: str, start_frame: int, num_frames: int, skip_frames: int = None) -> List[np.ndarray]:
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video not found: {video_path}")
 
@@ -98,7 +98,8 @@ def _read_video_frames(video_path: str, start_frame: int, num_frames: int) -> Li
             frame = reader.get_data(idx)
         except Exception:
             break
-        frames.append(frame)
+        if skip_frames is None or (idx - start_frame) % (skip_frames + 1) == 0:
+            frames.append(frame)
     reader.close()
     return frames
 
@@ -112,9 +113,11 @@ def load_aligned_video_frames_from_metrics(metrics: dict) -> Tuple[List[np.ndarr
     pred_video_path = meta["pred_video_path"]
     gt_start_frame = int(meta["gt_start_frame"])
     pred_start_frame = int(meta["pred_start_frame"])
+    skip_frames = int(meta['skip_frames']) if 'skip_frames' in meta else None
+    if skip_frames: num_frames *= (skip_frames + 1)
 
-    gt_frames = _read_video_frames(gt_video_path, gt_start_frame, num_frames)
-    pred_frames = _read_video_frames(pred_video_path, pred_start_frame, num_frames)
+    gt_frames = _read_video_frames(gt_video_path, gt_start_frame, num_frames, skip_frames)
+    pred_frames = _read_video_frames(pred_video_path, pred_start_frame, num_frames, skip_frames)
 
     valid_len = min(len(gt_frames), len(pred_frames), num_frames)
     if valid_len == 0:
@@ -221,6 +224,7 @@ class MetricsFrameViewer:
         self.rect_b = None
         self.text_artist = None
         self.frame_text_artist = None
+        self.info_text_artist = None
         self.btn_prev = None
         self.btn_next = None
 
@@ -277,9 +281,9 @@ class MetricsFrameViewer:
 
         frame_data = self.frames_data[self.frame_idx]
         self.frame_text_artist.set_text(
-            f"frame={self.frame_idx} / {len(self.frames_data)-1}\n"
-            f"soft_score={frame_data['soft_score']:.6f}\n"
-            f"hard_score={frame_data['hard_score']:.6f}\n"
+            f"frame={self.frame_idx} / {len(self.frames_data)-1}    "
+            f"soft_score={frame_data['soft_score']:.6f}    "
+            f"hard_score={frame_data['hard_score']:.6f}    "
             f"soft_mat={'yes' if self.has_soft_mat else 'no'}"
         )
 
@@ -308,7 +312,7 @@ class MetricsFrameViewer:
 
         sim_vec = self.current_soft_mat[idx]
         sim_map = sim_vec.reshape(self.grid_h, self.grid_w)
-        sim_map_norm = _normalize_map(sim_map, mode="minmax")
+        sim_map_norm = sim_map#_normalize_map(sim_map, mode="minmax")
 
         self.heat_artist.set_data(sim_map_norm)
         self.heat_artist.set_alpha(0.45)
@@ -325,10 +329,9 @@ class MetricsFrameViewer:
 
         frame_data = self.frames_data[self.frame_idx]
         self.text_artist.set_text(
-            f"A patch idx={idx} (row={row}, col={col})\n"
-            f"B best idx={best_idx} (row={best_row}, col={best_col})\n"
-            f"sim={float(sim_vec[best_idx]):.6f}\n"
-            f"soft_score={frame_data['soft_score']:.6f} | hard_score={frame_data['hard_score']:.6f}"
+            f"A patch idx={idx} (row={row}, col={col})    "
+            f"B best idx={best_idx} (row={best_row}, col={best_col})    "
+            f"sim={float(sim_vec[best_idx]):.6f}"
         )
         self.fig.canvas.draw_idle()
 
@@ -370,8 +373,8 @@ class MetricsFrameViewer:
             self._redraw_last_patch()
 
     def show(self):
-        self.fig, (self.ax_a, self.ax_b) = plt.subplots(1, 2, figsize=(14, 7))
-        plt.subplots_adjust(bottom=0.18)
+        self.fig, (self.ax_a, self.ax_b) = plt.subplots(1, 2, figsize=(14, 8))
+        plt.subplots_adjust(bottom=0.22)
 
         self.img_artist_a = self.ax_a.imshow(self.current_img_a)
         self.img_artist_b = self.ax_b.imshow(self.current_img_b)
@@ -401,24 +404,20 @@ class MetricsFrameViewer:
             vmax=1.0,
         )
 
-        self.text_artist = self.ax_b.text(
-            0.02, 0.02, "",
-            transform=self.ax_b.transAxes,
-            color="white",
-            fontsize=10,
-            bbox=dict(facecolor="black", alpha=0.6, pad=4),
+        self.frame_text_artist = self.fig.text(
+            0.5, 0.12, "",
+            ha="center", va="center",
+            color="black", fontsize=11,
         )
 
-        self.frame_text_artist = self.ax_a.text(
-            0.02, 0.02, "",
-            transform=self.ax_a.transAxes,
-            color="white",
-            fontsize=10,
-            bbox=dict(facecolor="black", alpha=0.6, pad=4),
+        self.text_artist = self.fig.text(
+            0.5, 0.08, "",
+            ha="center", va="center",
+            color="black", fontsize=10,
         )
 
-        ax_prev = plt.axes([0.38, 0.05, 0.10, 0.06])
-        ax_next = plt.axes([0.52, 0.05, 0.10, 0.06])
+        ax_prev = plt.axes([0.38, 0.02, 0.10, 0.05])
+        ax_next = plt.axes([0.52, 0.02, 0.10, 0.05])
 
         self.btn_prev = Button(ax_prev, "Prev Frame")
         self.btn_next = Button(ax_next, "Next Frame")

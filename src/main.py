@@ -44,7 +44,7 @@ def _save_soft_mats_npy(soft_mats_list, output_dir="output"):
 
 
 
-def main(video_max_frames=256, video_read_batch_size=32, device='cuda:0'):
+def main(video_max_frames=512, video_read_batch_size=128, device='cuda:0'):
     gt_dir = '/media/wjp/gingerBackup/mind/mind_data_with_baselines/gt/world_model_1st/2025-10-18-16-31-BoardcastStudio_A-1m01s'
     pred_dir = '/media/wjp/gingerBackup/mind/structured_baselines/v2v/1st_data/mem_test/2025-10-18-16-31-BoardcastStudio_A-1m01s'
 
@@ -57,8 +57,8 @@ def main(video_max_frames=256, video_read_batch_size=32, device='cuda:0'):
     gt_video_path = os.path.join(gt_dir, 'origin.mp4')
     pred_video_path = os.path.join(pred_dir, 'video.mp4')
 
-    gt_reader = VideoStreamReader(gt_video_path, start_frame=mark_time, total_frames=real_time + mark_time)
-    pred_reader = VideoStreamReader(pred_video_path, start_frame=0, total_frames=real_time)
+    gt_reader = VideoStreamReader(gt_video_path, start_frame=mark_time, total_frames=real_time + mark_time, skip_frames=15)
+    pred_reader = VideoStreamReader(pred_video_path, start_frame=0, total_frames=real_time, skip_frames=15)
 
     dino_model_path = '/home/wjp/Documents/Metric/dinov3/dinov3_vit7b16'
     device = 'cuda:0'
@@ -145,6 +145,7 @@ def main(video_max_frames=256, video_read_batch_size=32, device='cuda:0'):
             'pred_video_path': pred_video_path,
             'gt_start_frame': int(mark_time),
             'pred_start_frame': 0,
+            'skip_frames': 15,
             'video_max_frames': int(video_max_frames),
             'video_read_batch_size': int(video_read_batch_size),
             'processed_frames': int(total_processed_frames),

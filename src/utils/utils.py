@@ -125,7 +125,7 @@ import av
 
 class VideoStreamReader:
     """使用av进行流式视频读取，内存安全"""
-    def __init__(self, video_path, start_frame=0, total_frames=None):
+    def __init__(self, video_path, start_frame=0, total_frames=None, skip_frames=None):
         self.video_path = video_path
         self.container = av.open(video_path)
         self.video_stream = self.container.streams.video[0]
@@ -133,6 +133,8 @@ class VideoStreamReader:
         stream_total_frames = self.video_stream.frames
         self.total_frames = stream_total_frames if total_frames is None else total_frames
         self.current_pos = start_frame
+        self.start_frame = start_frame
+        self.skip_frames = skip_frames # skip the number of frames after every read frame. for example, skip_frames = 3 for reading the first frame in every 4 frames.
         self.yielder = self.container.decode(video=0)
         tqdm.write(f"[VideoStreamReader] {video_path}: stream_total={stream_total_frames}, start_frame={start_frame}, total_frames={self.total_frames}")
 
@@ -158,8 +160,11 @@ class VideoStreamReader:
                 tqdm.write(f"[VideoStreamReader] ERROR: Exception at read_batch frame {i}/{frames_to_read}, current_pos={self.current_pos}: {e}")
             if frame is None:
                 break
+
+            if self.skip_frames is None or (self.current_pos - self.start_frame) % (self.skip_frames + 1) == 0:
+                frames_list.append(torch.from_numpy(frame.to_rgb().to_ndarray()).float())
+            
             self.current_pos += 1
-            frames_list.append(torch.from_numpy(frame.to_rgb().to_ndarray()).float())
 
         if not frames_list:
             return True, None
