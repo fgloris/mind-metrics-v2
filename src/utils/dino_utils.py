@@ -23,7 +23,7 @@ def extract_dinov3_features(frames: torch.Tensor, model, processor, device, batc
         device: 计算设备
         batch_size: 批处理大小
     Returns:
-        features: DINOv3特征张量，形状 [f, 196, 768]
+        features: DINOv3特征张量，形状 [f, 3136, 768]
     """
     f = frames.shape[0]
     features_list = []
@@ -38,10 +38,10 @@ def extract_dinov3_features(frames: torch.Tensor, model, processor, device, batc
 
             # 提取特征
             outputs = model(**inputs, output_hidden_states=True)
-            last_hidden_state = outputs.last_hidden_state  # [batch, 201, 768]
+            last_hidden_state = outputs.last_hidden_state  # [batch, 1 + 4 + 3136, 768]
 
             # 提取patch tokens (跳过前5个token)
-            patch_tokens = last_hidden_state[:, 5:, :]  # [batch, 196, 768]
+            patch_tokens = last_hidden_state[:, 5:, :]  # [batch, 1 + 4 + 3136, 768]
 
             # L2 normalization
             patch_tokens_norm = torch.nn.functional.normalize(patch_tokens, p=2, dim=-1)
@@ -49,5 +49,5 @@ def extract_dinov3_features(frames: torch.Tensor, model, processor, device, batc
 
             del batch_frames
 
-    features = torch.cat(features_list, dim=0)  # [f, 196, 768]
+    features = torch.cat(features_list, dim=0)  # [f, 1 + 4 + 3136, 768]
     return features
