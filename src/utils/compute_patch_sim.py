@@ -19,7 +19,7 @@ def make_patch_positions(num_patches, device=None, dtype=torch.float32):
 def compute_patch_sim(
     gt_feature_list,
     pred_feature_list,
-    sigma=0.4,         # position gaussian bandwidth
+    sigma=1.0,         # position gaussian bandwidth
 ):
     """
     gt_feature_list, pred_feature_list:
@@ -34,6 +34,16 @@ def compute_patch_sim(
     soft_score_list = []
     hard_score_list = []
 
+    # positions: [N, 2]
+    gt_pos = make_patch_positions(N, device=gt_feature_list.device, dtype=gt_feature_list.dtype)
+    pred_pos = make_patch_positions(N, device=pred_feature_list.device, dtype=pred_feature_list.dtype)
+
+    # pairwise position distance: [N, N]
+    pos_dist = torch.cdist(gt_pos, pred_pos, p=2)
+
+    # convert distance to similarity with Gaussian kernel
+    dist_sim = torch.exp(-(pos_dist ** 2) / (2 * sigma * sigma))  # [N, N], in (0,1]
+
     for i in range(B):
         gt_feats = gt_feature_list[i]      # [N, C]
         pred_feats = pred_feature_list[i]  # [N, C]
@@ -45,22 +55,15 @@ def compute_patch_sim(
         # 2) feature similarity: [N, N]
         feat_sim = gt_feats @ pred_feats.T   # cosine sim if normalized
 
-        # 3) positions: [N, 2]
-        gt_pos = make_patch_positions(N, device=gt_feats.device, dtype=gt_feats.dtype)
-        pred_pos = make_patch_positions(N, device=pred_feats.device, dtype=pred_feats.dtype)
-
-        # 4) pairwise position distance: [N, N]
-        pos_dist = torch.cdist(gt_pos, pred_pos, p=2)
-
-        # 5) convert distance to similarity with Gaussian kernel
-        dist_sim = torch.exp(-(pos_dist ** 2) / (2 * sigma * sigma))  # [N, N], in (0,1]
-
         # 6) joint similarity
         joint_soft_sim = feat_sim * dist_sim
 
-        soft_score = joint_soft_sim.sum()
+        # 7) gt self-similarity
+        self_sim = (gt_feats @ gt_feats.T) * dist_sim
 
-        soft_mats_list.append(joint_soft_sim)
+        soft_score = joint_soft_sim.sum() / self_sim.sum()
+
+        #soft_mats_list.append(joint_soft_sim)
         soft_score_list.append(soft_score)
 
         best_idx = torch.argmax(joint_soft_sim, dim=1, keepdim=True)
@@ -70,4 +73,4 @@ def compute_patch_sim(
 
         hard_score_list.append(hard_score)
 
-    return soft_score_list, hard_score_list, soft_mats_list
+    return soft_score_list, hard_score_list#, soft_mats_list
